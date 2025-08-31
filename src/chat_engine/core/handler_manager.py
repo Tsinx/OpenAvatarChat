@@ -9,6 +9,11 @@ from inspect import isclass, isabstract
 from types import ModuleType
 from typing import Optional, Dict, Tuple
 
+# 设置UTF-8编码环境变量
+os.environ['PYTHONIOENCODING'] = 'utf-8'
+os.environ['PYTHONUTF8'] = '1'
+os.environ['PYTHONLEGACYWINDOWSSTDIO'] = 'utf-8'
+
 import gradio
 from fastapi import FastAPI
 from loguru import logger
@@ -70,9 +75,12 @@ class HandlerManager:
                 raise ValueError(f"Handler {handler_config.module} not found in search path.")
             try:
                 logger.info(f"Try to load {module_input_path}")
+                # 确保在导入前设置编码
+                if hasattr(sys, 'setdefaultencoding'):
+                    sys.setdefaultencoding('utf-8')
                 module = importlib.import_module(module_input_path)
-            except Exception:
-                logger.error(f"Failed to import handler module {handler_config.module}")
+            except Exception as e:
+                logger.error(f"Failed to import handler module {handler_config.module}: {e}")
                 raise
             handler_class = None
             for name, obj in inspect.getmembers(module):

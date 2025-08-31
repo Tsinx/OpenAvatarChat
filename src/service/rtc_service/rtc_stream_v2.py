@@ -22,7 +22,9 @@ vpx.MIN_BITRATE = 1000000
 vpx.MAX_BITRATE = 10000000
 
 
-class RtcStream(AsyncAudioVideoStreamHandler):
+class RtcStreamV2(AsyncAudioVideoStreamHandler):
+    """支持手动录音控制的RTC流处理器"""
+    
     def __init__(self,
                  session_id: Optional[str],
                  expected_layout="mono",
@@ -42,13 +44,12 @@ class RtcStream(AsyncAudioVideoStreamHandler):
         self.client_handler_delegate: Optional[ClientHandlerDelegate] = None
         self.client_session_delegate: Optional[ClientSessionDelegate] = None
 
-        self.weak_factory: Optional[weakref.ReferenceType[RtcStream]] = None
+        self.weak_factory: Optional[weakref.ReferenceType[RtcStreamV2]] = None
 
         self.session_id = session_id
         self.stream_start_delay = stream_start_delay
 
         self.chat_channel = None
-        self.recording_active = False
         self.first_audio_emitted = False
 
         self.quit = asyncio.Event()
@@ -59,8 +60,11 @@ class RtcStream(AsyncAudioVideoStreamHandler):
         self.start_time = None
         self.timestamp_base = self.input_sample_rate
 
-        self.streams: Dict[str, RtcStream] = {}
-
+        self.streams: Dict[str, RtcStreamV2] = {}
+        
+        # 手动录音控制状态
+        self.is_recording = False
+        self.recording_start_time = None
 
     # copy is used as create_instance in fastrtc
     def copy(self, **kwargs) -> AsyncAudioVideoStreamHandler:
@@ -70,7 +74,7 @@ class RtcStream(AsyncAudioVideoStreamHandler):
             session_id = kwargs.get("webrtc_id", None)
             if session_id is None:
                 session_id = uuid.uuid4().hex
-            new_stream = RtcStream(
+            new_stream = RtcStreamV2(
                 session_id,
                 expected_layout=self.expected_layout,
                 input_sample_rate=self.input_sample_rate,
@@ -96,9 +100,6 @@ class RtcStream(AsyncAudioVideoStreamHandler):
 
     async def emit(self) -> AudioEmitType:
         try:
-            # if not self.args_set.is_set():
-            # await self.wait_for_args()
-
             if not self.first_audio_emitted:
                 self.client_session_delegate.clear_data()
                 self.first_audio_emitted = True
@@ -135,6 +136,7 @@ class RtcStream(AsyncAudioVideoStreamHandler):
             raise
 
     async def receive(self, frame: tuple[int, np.ndarray]):
+        """接收音频数据，支持手动录音控制"""
         if self.client_session_delegate is None:
             return
         timestamp = self.client_session_delegate.get_timestamp()
@@ -142,31 +144,19 @@ class RtcStream(AsyncAudioVideoStreamHandler):
             return
         _, array = frame
         
-        # 创建数据包定义，用于添加录音信号元数据
+        # 检查是否有录音控制信号
+        recording_signal = getattr(frame, 'recording_signal', None)
+        
+        # 创建数据包并添加录音控制元数据
         data_bundle = self.client_session_delegate.input_data_definitions[EngineChannelType.AUDIO]
-        
-        # 准备元数据
-        meta_data = {}
-        
-        # 检查录音状态并添加对应的信号
-        if hasattr(self, 'recording_active'):
-            if self.recording_active and not getattr(self, '_recording_signal_sent', False):
-                # 录音刚开始，发送开始信号
-                meta_data['recording_signal'] = 'start'
-                self._recording_signal_sent = True
-                logger.info("Sending recording start signal with audio data")
-            elif not self.recording_active and getattr(self, '_recording_signal_sent', False):
-                # 录音刚结束，发送停止信号
-                meta_data['recording_signal'] = 'stop'
-                self._recording_signal_sent = False
-                logger.info("Sending recording stop signal with audio data")
+        if recording_signal:
+            data_bundle.add_meta('recording_signal', recording_signal)
         
         self.client_session_delegate.put_data(
             EngineChannelType.AUDIO,
             array,
             timestamp,
             self.input_sample_rate,
-            meta_data=meta_data if meta_data else None
         )
 
     async def video_receive(self, frame):
@@ -183,93 +173,64 @@ class RtcStream(AsyncAudioVideoStreamHandler):
         )
 
     def set_channel(self, channel):
-            super().set_channel(channel)
-            self.chat_channel = channel
+        super().set_channel(channel)
+        self.chat_channel = channel
+        
+        async def process_chat_history():
+            role = None
+            chat_id = None
+            while not self.quit.is_set():
+                chat_data = await self.client_session_delegate.get_data(EngineChannelType.TEXT)
+                if chat_data is None or chat_data.data is None:
+                    continue
+                logger.debug(f"Got chat data {str(chat_data)}")
+                current_role = 'human' if chat_data.type == ChatDataType.HUMAN_TEXT else 'avatar'
+                chat_id = uuid.uuid4().hex if current_role != role else chat_id
+                role = current_role
+                self.chat_channel.send(json.dumps({'type': 'chat', 'message': chat_data.data.get_main_data(), 
+                                                    'id': chat_id, 'role': current_role}))  
+        asyncio.create_task(process_chat_history())
             
-            async def process_chat_history():
-                role = None
-                chat_id = None
-                while not self.quit.is_set():
-                    chat_data = await self.client_session_delegate.get_data(EngineChannelType.TEXT)
-                    if chat_data is None or chat_data.data is None:
-                        continue
-                    logger.debug(f"Got chat data {str(chat_data)}")
-                    current_role = 'human' if chat_data.type == ChatDataType.HUMAN_TEXT else 'avatar'
-                    chat_id = uuid.uuid4().hex if current_role != role else chat_id
-                    role = current_role
-                    self.chat_channel.send(json.dumps({'type': 'chat', 'message': chat_data.data.get_main_data(), 
-                                                        'id': chat_id, 'role': current_role}))  
-            asyncio.create_task(process_chat_history())
-                
-            @channel.on("message")
-            def _(message):
-                logger.info(f"Received message Custom: {message}")
-                try:
-                    message = json.loads(message)
-                except Exception as e:
-                    logger.info(e)
-                    message = {}
+        @channel.on("message")
+        def _(message):
+            logger.info(f"Received message Custom: {message}")
+            try:
+                message = json.loads(message)
+            except Exception as e:
+                logger.info(e)
+                message = {}
 
-                if self.client_session_delegate is None:
-                    return
-                timestamp = self.client_session_delegate.get_timestamp()
-                if timestamp[0] / timestamp[1] < self.stream_start_delay:
-                    return
-                logger.info(f'on_chat_datachannel: {message}')
-    
-                if message['type'] == 'stop_chat':
-                    self.client_session_delegate.emit_signal(
-                        ChatSignal(
-                            type=ChatSignalType.INTERRUPT,
-                            source_type=ChatSignalSourceType.CLIENT,
-                            source_name="rtc",
-                        )
-                    )
-                elif message['type'] == 'chat':
-                    channel.send(json.dumps({'type': 'avatar_end'}))
-                    if self.client_session_delegate.shared_states.enable_vad is False:
-                        return
-                    self.client_session_delegate.shared_states.enable_vad = False
-                    self.client_session_delegate.emit_signal(
-                        ChatSignal(
-                            # begin a new round of responding
-                            type=ChatSignalType.BEGIN,
-                            stream_type=ChatDataType.AVATAR_AUDIO,
-                            source_type=ChatSignalSourceType.CLIENT,
-                            source_name="rtc",
-                        )
-                    )
-                    self.client_session_delegate.put_data(
-                        EngineChannelType.TEXT,
-                        message['data'],
-                        loopback=True
-                    )
-                elif message['type'] == 'recording_control':
-                    # 处理手动录音控制信号
-                    action = message.get('action')
-                    if action == 'start':
-                        logger.info("Manual recording started")
-                        # 向手动录音处理器发送录音开始信号
-                        self.recording_active = True
-                    elif action == 'stop':
-                        logger.info("Manual recording stopped")  
-                        # 向手动录音处理器发送录音停止信号
-                        self.recording_active = False
-                # else:
+            if self.client_session_delegate is None:
+                return
+            timestamp = self.client_session_delegate.get_timestamp()
+            if timestamp[0] / timestamp[1] < self.stream_start_delay:
+                return
+            logger.info(f'on_chat_datachannel: {message}')
 
-                # channel.send(json.dumps({"type": "chat", "unique_id": unique_id, "message": message}))
-          
-    async def on_chat_datachannel(self, message: Dict, channel):
-        # {"type":"chat",id:"标识属于同一段话", "message":"Hello, world!"}
-        # unique_id = uuid.uuid4().hex
-        pass
-    def shutdown(self):
+            if message['type'] == 'stop_chat':
+                self.client_session_delegate.emit_signal(
+                    ChatSignal(
+                        signal_type=ChatSignalType.STOP_CHAT,
+                        source_type=ChatSignalSourceType.CLIENT,
+                        source_id=self.session_id,
+                        target_id=self.session_id,
+                        data={}
+                    )
+                )
+            elif message['type'] == 'recording_control':
+                # 处理录音控制信号
+                control_action = message.get('action')
+                if control_action == 'start':
+                    logger.info("Manual recording started")
+                    self.is_recording = True
+                    self.recording_start_time = timestamp[0]
+                elif control_action == 'stop':
+                    logger.info("Manual recording stopped")
+                    self.is_recording = False
+                    self.recording_start_time = None
+
+    def close(self):
         self.quit.set()
-        factory = None
-        if self.weak_factory is not None:
-            factory = self.weak_factory()
-        if factory is None:
-            factory = self
-        self.client_session_delegate = None
-        if factory.client_handler_delegate is not None:
-            factory.client_handler_delegate.stop_session(self.session_id)
+        if self.session_id in self.streams:
+            del self.streams[self.session_id]
+        super().close()

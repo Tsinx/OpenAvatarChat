@@ -28,7 +28,7 @@ from chat_engine.data_models.chat_signal import ChatSignal
 from chat_engine.data_models.runtime_data.data_bundle import DataBundleDefinition, DataBundleEntry, VariableSize, \
     DataBundle
 from service.rtc_service.rtc_provider import RTCProvider
-from service.rtc_service.rtc_stream import RtcStream
+from service.rtc_service.rtc_stream_v2 import RtcStreamV2
 
 
 class RtcClientSessionDelegate(ClientSessionDelegate):
@@ -62,7 +62,7 @@ class RtcClientSessionDelegate(ClientSessionDelegate):
         return data
 
     def put_data(self, modality: EngineChannelType, data: Union[np.ndarray, str],
-                 timestamp: Optional[Tuple[int, int]] = None, samplerate: Optional[int] = None, loopback: bool = False, meta_data: Optional[Dict] = None):
+                 timestamp: Optional[Tuple[int, int]] = None, samplerate: Optional[int] = None, loopback: bool = False):
         if timestamp is None:
             timestamp = self.get_timestamp()
         if self.data_submitter is None:
@@ -82,11 +82,6 @@ class RtcClientSessionDelegate(ClientSessionDelegate):
             data_bundle.set_main_data(data)
         else:
             return
-        
-        # 添加额外的元数据
-        if meta_data:
-            for key, value in meta_data.items():
-                data_bundle.add_meta(key, value)
         chat_data = ChatData(
             source="client",
             type=chat_data_type,
@@ -121,12 +116,14 @@ class ClientRtcContext(HandlerContext):
         self.client_session_delegate: Optional[RtcClientSessionDelegate] = None
 
 
-class ClientHandlerRtc(ClientHandlerBase):
+class ClientHandlerRtcV2(ClientHandlerBase):
+    """支持手动录音控制的RTC客户端处理器"""
+    
     def __init__(self):
         super().__init__()
         self.engine_config = None
         self.handler_config = None
-        self.rtc_streamer_factory: Optional[RtcStream] = None
+        self.rtc_streamer_factory: Optional[RtcStreamV2] = None
 
         self.output_bundle_definitions: Dict[EngineChannelType, DataBundleDefinition] = {}
 
@@ -137,7 +134,7 @@ class ClientHandlerRtc(ClientHandlerBase):
         )
 
     def prepare_rtc_definitions(self):
-        self.rtc_streamer_factory = RtcStream(
+        self.rtc_streamer_factory = RtcStreamV2(
             session_id=None,
             expected_layout="mono",
             input_sample_rate=16000,
@@ -204,98 +201,12 @@ class ClientHandlerRtc(ClientHandlerBase):
 
         frontend_path = Path(DirectoryInfo.get_src_dir() + '/handlers/client/rtc_client/frontend/dist')
         if frontend_path.exists():
-            logger.info(f"Serving frontend from {frontend_path}")
-            fastapi.mount('/ui', StaticFiles(directory=frontend_path), name="static")
-            fastapi.add_route('/', RedirectResponse(url='/ui/index.html'))
+            fastapi.mount("/", StaticFiles(directory=str(frontend_path), html=True), name="static")
         else:
-            logger.warning(f"Frontend directory {frontend_path} does not exist")
-            fastapi.add_route('/', RedirectResponse(url='/gradio'))
+            logger.warning(f"Frontend path {frontend_path} does not exist")
 
-        if parent_block is None:
-            parent_block = ui
-        with ui:
-            with parent_block:
-                gradio.components.HTML(
-                    """
-                    <h1 id="openavatarchat">
-                       The Gradio page is no longer available. Please use the openavatarchat-webui submodule instead.
-                    </h1>
-                    """,
-                    visible=True
-                )
+        @fastapi.get("/")
+        async def root():
+            return RedirectResponse(url="/index.html")
 
-    def on_setup_app(self, app: FastAPI, ui: gradio.blocks.Block, parent_block: Optional[gradio.blocks.Block] = None):
-        avatar_config = {}
-        self.setup_rtc_ui(ui, parent_block, app, avatar_config)
-
-    def create_context(self, session_context: SessionContext,
-                       handler_config: Optional[HandlerBaseConfigModel] = None) -> HandlerContext:
-        if not isinstance(handler_config, ClientRtcConfigModel):
-            handler_config = ClientRtcConfigModel()
-        context = ClientRtcContext(session_context.session_info.session_id)
-        context.config = handler_config
-        return context
-
-    def start_context(self, session_context: SessionContext, handler_context: HandlerContext):
-        pass
-
-    def on_setup_session_delegate(self, session_context: SessionContext, handler_context: HandlerContext,
-                                  session_delegate: ClientSessionDelegate):
-        handler_context = cast(ClientRtcContext, handler_context)
-        session_delegate = cast(RtcClientSessionDelegate, session_delegate)
-
-        session_delegate.timestamp_generator = session_context.get_timestamp
-        session_delegate.data_submitter = handler_context.data_submitter
-        session_delegate.input_data_definitions = self.output_bundle_definitions
-        session_delegate.shared_states = session_context.shared_states
-
-        handler_context.client_session_delegate = session_delegate
-
-    def create_handler_detail(self, _session_context, _handler_context):
-        inputs = {
-            ChatDataType.AVATAR_AUDIO: HandlerDataInfo(
-                type=ChatDataType.AVATAR_AUDIO
-            ),
-            ChatDataType.AVATAR_VIDEO: HandlerDataInfo(
-                type=ChatDataType.AVATAR_VIDEO
-            ),
-            ChatDataType.AVATAR_TEXT: HandlerDataInfo(
-                type=ChatDataType.AVATAR_TEXT
-            ),
-            ChatDataType.HUMAN_TEXT: HandlerDataInfo(
-                type=ChatDataType.HUMAN_TEXT
-            ),
-        }
-        outputs = {
-            ChatDataType.MIC_AUDIO: HandlerDataInfo(
-                type=ChatDataType.MIC_AUDIO,
-                definition=self.output_bundle_definitions[EngineChannelType.AUDIO]
-            ),
-            ChatDataType.CAMERA_VIDEO: HandlerDataInfo(
-                type=ChatDataType.CAMERA_VIDEO,
-                definition=self.output_bundle_definitions[EngineChannelType.VIDEO]
-            ),
-            ChatDataType.HUMAN_TEXT: HandlerDataInfo(
-                type=ChatDataType.HUMAN_TEXT,
-                definition=self.output_bundle_definitions[EngineChannelType.TEXT]
-            ),
-        }
-        return HandlerDetail(
-            inputs=inputs,
-            outputs=outputs
-        )
-
-    def get_handler_detail(self, session_context: SessionContext, context: HandlerContext) -> HandlerDetail:
-        return self.create_handler_detail(session_context, context)
-
-    def handle(self, context: HandlerContext, inputs: ChatData,
-               output_definitions: Dict[ChatDataType, HandlerDataInfo]):
-        context = cast(ClientRtcContext, context)
-        if context.client_session_delegate is None:
-            return
-        data_queue = context.client_session_delegate.output_queues.get(inputs.type.channel_type)
-        if data_queue is not None:
-            data_queue.put_nowait(inputs)
-
-    def destroy_context(self, context: HandlerContext):
-        pass
+        return webrtc

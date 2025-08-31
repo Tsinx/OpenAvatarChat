@@ -8,14 +8,19 @@ default:
     cert_key: "ssl_certs/localhost.key"
   chat_engine:
     model_root: "models"
-    concurrent_limit: 5
+    concurrent_limit: 1
     handler_search_path:
       - "src/handlers"
     handler_configs:
-      LamClient:
-        module: client/h5_rendering_client/client_handler_lam
-        asset_path: "lam_samples/barbara.zip"
-      # 禁用自动VAD，改用手动录音
+      # 使用手动录音处理器替代VAD
+      ManualRecording:
+        enabled: True
+        module: vad/manual_recording/vad_handler_manual
+        min_recording_duration_ms: 500
+        max_recording_duration_ms: 30000
+        buffer_size_ms: 100
+      
+      # 禁用原有的VAD处理器
       SileroVad:
         enabled: False
         module: vad/silerovad/vad_handler_silero
@@ -24,39 +29,45 @@ default:
         end_delay: 5000
         buffer_look_back: 5000
         speech_padding: 512
-      # 添加手动录音处理器
-      ManualRecording:
-        enabled: True
-        module: vad/manual_recording/vad_handler_manual
-        min_recording_duration_ms: 500
-        max_recording_duration_ms: 30000
-        buffer_size_ms: 100
+      
+      # 使用LAM客户端处理器来显示数字人
+      LamClient:
+        module: client/h5_rendering_client/client_handler_lam
+        asset_path: "lam_samples/barbara.zip"
+      
+      # 同时保留RTC客户端用于音频通信
+      RtcClient:
+        module: client/rtc_client/client_handler_rtc
+        connection_ttl: 36000
+      
       SenseVoice:
         enabled: True
         module: asr/sensevoice/asr_handler_sensevoice
         model_name: "iic/SenseVoiceSmall"
+      
       CosyVoice:
         enabled: True
         module: tts/bailian_tts/tts_handler_cosyvoice_bailian
+        ref_audio_path: ""
+        ref_audio_text: ""
         voice: "longxiaocheng"
+        sample_rate: 24000
+        api_key: "sk-47214dc20761420694fa892cf15339fa"
         model_name: "cosyvoice-v1"
-        # api_key: "" # default=os.getenv("DASHSCOPE_API_KEY")
+      
       LLMOpenAICompatible:
         enabled: True
         module: llm/openai_compatible/llm_handler_openai_compatible
         model_name: "qwen-plus"
-        enable_video_input: False # ensure your llm support video input
-        history_length: 20
-        # model_name: "gemini-2.0-flash"
         system_prompt: "请你扮演一个 AI 助手，用简短的两三句对话来回答用户的问题，并在对话内容中加入合适的标点符号，不需要讨论标点符号相关的内容"
+        api_key: "sk-47214dc20761420694fa892cf15339fa"
         api_url: "https://dashscope.aliyuncs.com/compatible-mode/v1"
-        # api_url: 'http://127.0.0.1:11434/v1' # ollama
-        # api_url: 'https://generativelanguage.googleapis.com/v1beta/openai/'
-        # api_key: "" # default=os.getenv("DASHSCOPE_API_KEY")
-      # Dify:
-      #   enabled: True
-      #   module: llm/dify/llm_handler_dify
-      #   api_key: app-J3LiQRqh4MrOOvS6vpyrgIOW
-      #   api_url: 'http://localhost/v1'
+        enable_video_input: False
+        history_length: 20
+      
       LAM_Driver:
+        enabled: True
         module: avatar/lam/avatar_handler_lam_audio2expression
+        model_name: "LAM_audio2exp"
+        feature_extractor_model_name: "wav2vec2-base-960h"
+        audio_sample_rate: 24000
