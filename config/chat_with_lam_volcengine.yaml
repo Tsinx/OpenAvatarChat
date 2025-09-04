@@ -1,0 +1,92 @@
+default:
+  logger:
+    log_level: "INFO"
+  service:
+    host: "0.0.0.0"
+    port: 8282
+    cert_file: "ssl_certs/localhost.crt"
+    cert_key: "ssl_certs/localhost.key"
+  chat_engine:
+    model_root: "models"
+    concurrent_limit: 5
+    handler_search_path:
+      - "src/handlers"
+    handler_configs:
+      LamClient:
+        module: client/h5_rendering_client/client_handler_lam
+        asset_path: "lam_samples/barbara.zip"
+      # 使用火山引擎实时对话处理器
+      VolcEngineRealtime:
+        enabled: True
+        module: realtime/volcengine/realtime_handler_volcengine
+        # 火山引擎配置
+        app_id: "5385188715"  # 火山引擎应用ID
+        token: "7Mb2pErVhX_z2bpEjWlYJa6N9yW2RhmS"  # 访问令牌
+        cluster: "volcengine_streaming_common"  # 集群名称
+        # WebSocket连接配置
+        ws_url: "wss://openspeech.bytedance.com/api/v2/asr"  # 火山引擎ASR WebSocket地址
+        connect_timeout: 10
+        message_timeout: 30
+        max_retries: 3
+        retry_delay: 1.0
+        # 音频配置
+        sample_rate: 16000
+        channels: 1
+        bit_depth: 16
+        chunk_size: 1024
+        # 会话配置
+        session_timeout: 300  # 5分钟会话超时
+        max_concurrent_sessions: 10
+        # 协议配置
+        protocol_version: "1.0"
+        enable_vad: True
+        enable_punctuation: True
+        enable_inverse_text_normalization: True
+        # 回调配置
+        on_result_callback: True
+        on_error_callback: True
+        on_close_callback: True
+        # 调试配置
+        debug_mode: True
+        log_audio_data: True
+      # 禁用其他ASR处理器，使用火山引擎实时处理
+      SenseVoice:
+        enabled: False
+        module: asr/sensevoice/asr_handler_sensevoice
+        model_name: "iic/SenseVoiceSmall"
+      # 禁用自动VAD，火山引擎实时处理器内置VAD
+      SileroVad:
+        enabled: False
+        module: vad/silerovad/vad_handler_silero
+        speaking_threshold: 0.5
+        start_delay: 2048
+        end_delay: 5000
+        buffer_look_back: 5000
+        speech_padding: 512
+      # 保留手动录音作为备选
+      ManualRecording:
+        enabled: False
+        module: vad/manual_recording/vad_handler_manual
+        min_recording_duration_ms: 500
+        max_recording_duration_ms: 30000
+        buffer_size_ms: 100
+      # 禁用阿里云CosyVoice TTS - 火山引擎实时API直接返回语音
+      CosyVoice:
+        enabled: False
+        module: tts/bailian_tts/tts_handler_cosyvoice_bailian
+        voice: "longxiaocheng"
+        model_name: "cosyvoice-v1"
+        # api_key: "" # default=os.getenv("DASHSCOPE_API_KEY")
+      # 禁用OpenAI兼容的LLM - 火山引擎实时API是端到端多模态大模型
+      LLMOpenAICompatible:
+        enabled: False
+        module: llm/openai_compatible/llm_handler_openai_compatible
+        model_name: "qwen-plus"
+        enable_video_input: False
+        history_length: 20
+        system_prompt: "请你扮演一个智能AI助手，用自然流畅的语言与用户对话。回答要简洁明了，通常控制在2-3句话内，并适当使用标点符号让语音合成更自然。"
+        api_url: "https://dashscope.aliyuncs.com/compatible-mode/v1"
+        # api_key: "" # default=os.getenv("DASHSCOPE_API_KEY")
+      # LAM数字人驱动器
+      LAM_Driver:
+        module: avatar/lam/avatar_handler_lam_audio2expression

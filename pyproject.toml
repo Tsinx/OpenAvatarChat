@@ -32,6 +32,7 @@ dependencies = [
     "torchvision",
     "torchaudio",
     "python-dotenv>=1.1.0",
+    "pyaudio>=0.2.14",
 ]
 
 [tool.uv.workspace]
@@ -44,6 +45,7 @@ members = [
     "src/handlers/vad/silerovad",
     "src/handlers/tts/bailian_tts",
     "src/handlers/asr/sensevoice",
+    "src/handlers/asr/bailian_asr",
     "src/handlers/avatar/musetalk",
 ]
 

@@ -95,7 +95,10 @@ class HandlerManager:
                 logger.error(f"Handler module {handler_config.module} does not contain a HandlerBase subclass.")
                 raise ValueError(f"Handler module {handler_config.module} does not contain a HandlerBase subclass.")
             self.handler_modules[handler_config.module] = module, handler_class
-            self.register_handler(handler_name, handler_class())
+            logger.info(f"[HANDLER_MANAGER] 实例化处理器: {handler_name}, 类: {handler_class.__name__}")
+            handler_instance = handler_class()
+            logger.info(f"[HANDLER_MANAGER] 处理器实例化完成: {handler_name}, 实例: {handler_instance}")
+            self.register_handler(handler_name, handler_instance)
 
     def add_search_path(self, path: str):
         if not os.path.isabs(path):
@@ -114,6 +117,7 @@ class HandlerManager:
                 sys.path.append(path)
 
     def register_handler(self, name: str, handler: HandlerBase):
+        logger.info(f"[HANDLER_MANAGER] 开始注册处理器: {name}, 处理器类型: {type(handler)}")
         registry = self.handler_registries.get(name, None)
         if registry is None:
             registry = HandlerRegistry()
@@ -122,34 +126,44 @@ class HandlerManager:
         handler_root = os.path.split(handler_module.__file__)[0]
         handler.handler_root = handler_root
         handler.engine = self.engine_ref
+        logger.info(f"[HANDLER_MANAGER] 设置处理器属性: {name}, handler_root={handler_root}")
         if registry.base_info is None:
+            logger.info(f"[HANDLER_MANAGER] 调用on_before_register: {name}")
             handler.on_before_register()
+            logger.info(f"[HANDLER_MANAGER] 获取处理器信息: {name}")
             base_info = handler.get_handler_info()
             base_info.name = name
             raw_config = self.handler_configs.get(name, {})
+            logger.info(f"[HANDLER_MANAGER] 原始配置: {name}, config={raw_config}")
             if not issubclass(base_info.config_model, HandlerBaseConfigModel):
                 logger.error(f"Handler {name} provides invalid config model {base_info.config_model}")
                 raise ValueError(f"Handler {name} provides invalid config model {base_info.config_model}")
+            logger.info(f"[HANDLER_MANAGER] 验证配置模型: {name}, config_model={base_info.config_model}")
             config: HandlerBaseConfigModel = base_info.config_model.model_validate(raw_config)
             config.concurrent_limit = self.concurrent_limit
             registry.base_info = base_info
             registry.handler = handler
             registry.handler_config = config
-            logger.info(f"Registered handler {name}({type(handler)}) with config: {config}")
+            logger.info(f"[HANDLER_MANAGER] 处理器注册完成: {name}({type(handler)}) with config: {config}")
 
     def load_handlers(self, engine_config: ChatEngineConfigModel,
                       app: Optional[FastAPI] = None,
                       ui: Optional[gradio.blocks.Block] = None,
                       parent_block: Optional[gradio.blocks.Block] = None):
+        logger.info(f"[HANDLER_MANAGER] 开始加载处理器")
         enabled_handlers = self.get_enabled_handler_registries()
+        logger.info(f"[HANDLER_MANAGER] 找到启用的处理器数量: {len(enabled_handlers)}")
         client_handlers = []
         for registry in enabled_handlers:
+            logger.info(f"[HANDLER_MANAGER] 准备加载处理器: {registry.base_info.name}, 类型: {type(registry.handler)}")
             if isinstance(registry.handler, ClientHandlerBase):
                 client_handlers.append(registry)
+                logger.info(f"[HANDLER_MANAGER] 识别为客户端处理器: {registry.base_info.name}")
             load_start = time.monotonic()
+            logger.info(f"[HANDLER_MANAGER] 调用处理器load方法: {registry.base_info.name}")
             registry.handler.load(engine_config, registry.handler_config)
             dur_load = time.monotonic() - load_start
-            logger.info(f"Handler {registry.base_info.name} loaded in {round(dur_load * 1e3)} milliseconds")
+            logger.info(f"[HANDLER_MANAGER] 处理器加载完成: {registry.base_info.name} loaded in {round(dur_load * 1e3)} milliseconds")
         if app is not None or ui is not None:
             for registry in client_handlers:
                 setup_start = time.monotonic()

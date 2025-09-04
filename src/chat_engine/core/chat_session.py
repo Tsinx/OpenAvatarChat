@@ -275,12 +275,24 @@ class ChatSession:
     @classmethod
     def distribute_data(cls, data: ChatData, sinks: Dict[ChatDataType, List[DataSink]],
                        outputs: Dict[Tuple[str, ChatDataType], DataSink]):
+        from loguru import logger
+        
         source_key = (data.source, data.type)
+        
+        # 检查是否有录音信号元数据
+        recording_signal = None
+        if hasattr(data.data, 'get_meta'):
+            recording_signal = data.data.get_meta('recording_signal')
+            if recording_signal:
+                logger.info(f"[CHAT_SESSION] Data contains recording_signal: {recording_signal}")
+        
         data_sink = outputs.get(source_key, None)
         if data_sink is not None:
             data_sink.sink_queue.put_nowait(data)
+            
         sink_list = sinks.get(data.type, [])
-        for sink in sink_list:
+        
+        for i, sink in enumerate(sink_list):
             if sink.owner == data.source:
                 continue
             sink.sink_queue.put_nowait(data)
@@ -290,27 +302,50 @@ class ChatSession:
     @classmethod
     def submit_data(cls, data: HandlerResultType, handler_name: str, output_info, session_context: SessionContext,
                     sinks: Dict[ChatDataType, List[DataSink]], outputs: Dict[Tuple[str, ChatDataType], DataSink]):
+        from loguru import logger
+        
         chat_data = cls._packet_chat_data(handler_name, output_info, session_context, data)
         if chat_data is not None:
             cls.distribute_data(chat_data, sinks, outputs)
+        else:
+            logger.warning(f"[CHAT_SESSION] Failed to package data from handler {handler_name}")
 
     @classmethod
     def handler_pumper(cls, session_context: SessionContext, handler_env: HandlerEnv,
                        sinks: Dict[ChatDataType, List[DataSink]],
                        outputs: Dict[Tuple[str, ChatDataType], DataSink]):
+        from loguru import logger
+        
+        handler_name = handler_env.handler_info.name
+        # 只为特定处理器记录启动日志
+        if handler_name == "VolcEngineRealtime":
+            logger.info(f"[HANDLER_PUMPER] 处理器线程启动: {handler_name}")
+        
         shared_states = session_context.shared_states
         input_queue = handler_env.input_queue
         handler = handler_env.handler
         output_info = handler_env.output_info
         if output_info is None:
             output_info = {}
+            
+        if handler_name == "VolcEngineRealtime":
+            logger.info(f"[HANDLER_PUMPER] {handler_name} 开始监听输入队列")
+        
         while shared_states.active:
             try:
                 input_data = input_queue.get_nowait()
             except (queue.Empty, asyncio.QueueEmpty):
                 time.sleep(0.03)
                 continue
-            handler_result = handler.handle(handler_env.context, input_data, output_info)
+            
+            try:
+                handler_result = handler.handle(handler_env.context, input_data, output_info)
+            except Exception as e:
+                logger.error(f"[HANDLER_PUMPER] {handler_name} handle方法执行异常: {e}")
+                import traceback
+                logger.error(f"[HANDLER_PUMPER] {handler_name} 异常堆栈: {traceback.format_exc()}")
+                continue
+                
             if not isinstance(handler_result, Iterable):
                 handler_result = [handler_result]
             for handler_output in handler_result:
@@ -325,6 +360,8 @@ class ChatSession:
                 if chat_data is None:
                     continue
                 cls.distribute_data(chat_data, sinks, outputs)
+                
+        logger.info(f"[HANDLER_PUMPER] 处理器线程结束: {handler_name}")
 
     def prepare_handler(self, handler: HandlerBase, handler_info: HandlerBaseInfo,
                         handler_config: HandlerBaseConfigModel):
@@ -372,18 +409,36 @@ class ChatSession:
         self.session_context.set_input_start()
 
     def stop(self):
+        logger.info(f"🔄 [Session] 开始停止会话 - session_id: {getattr(self.session_context, 'session_id', 'unknown')}")
+        
+        # 设置会话状态为非活跃
         self.session_context.shared_states.active = False
+        logger.info("🔄 [Session] 会话状态已设置为非活跃")
+        
+        # 停止输入泵线程
         if self.input_pump_thread:
+            logger.info("🔄 [Session] 正在停止输入泵线程...")
             self.input_pump_thread.join()
             self.input_pump_thread = None
+            logger.info("🔄 [Session] 输入泵线程已停止")
+        else:
+            logger.info("🔄 [Session] 无输入泵线程需要停止")
+            
+        # 停止所有处理器
+        logger.info(f"🔄 [Session] 停止会话 - {len(self.handlers)} 个处理器")
+        
         for handler_name, handler_record in self.handlers.items():
             if handler_record.pump_thread:
                 handler_record.pump_thread.join()
                 handler_record.pump_thread = None
+            
             handler_record.env.handler.destroy_context(handler_record.env.context)
+            
+        # 清理处理器字典和会话上下文
         self.handlers.clear()
         self.session_context.cleanup()
-        logger.info("chat session stopped")
+        
+        logger.info(f"✅ [Session] 会话停止完成 - session_id: {getattr(self.session_context, 'session_id', 'unknown')}")
 
     def get_timestamp(self):
         return self.session_context.get_timestamp()

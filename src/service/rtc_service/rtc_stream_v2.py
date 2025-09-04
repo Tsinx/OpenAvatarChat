@@ -219,18 +219,47 @@ class RtcStreamV2(AsyncAudioVideoStreamHandler):
                 )
             elif message['type'] == 'recording_control':
                 # 处理录音控制信号
+                logger.info(f"🎤 [Backend] 接收到录音控制信号: {message}")
                 control_action = message.get('action')
+                duration = message.get('duration', 'N/A')
+                
                 if control_action == 'start':
-                    logger.info("Manual recording started")
+                    logger.info(f"🎤 [Backend] 开始手动录音 - session_id: {self.session_id}")
                     self.is_recording = True
                     self.recording_start_time = timestamp[0]
+                    logger.info(f"🎤 [Backend] 录音状态已设置: is_recording={self.is_recording}, start_time={self.recording_start_time}")
                 elif control_action == 'stop':
-                    logger.info("Manual recording stopped")
+                    logger.info(f"🎤 [Backend] 停止手动录音 - session_id: {self.session_id}, 前端报告时长: {duration}ms")
+                    if self.is_recording:
+                        actual_duration = timestamp[0] - self.recording_start_time if self.recording_start_time else 0
+                        logger.info(f"🎤 [Backend] 后端计算的实际录音时长: {actual_duration}ms")
+                    else:
+                        logger.warning(f"🎤 [Backend] 警告: 收到停止信号但当前未在录音状态")
+                    
                     self.is_recording = False
                     self.recording_start_time = None
+                    logger.info(f"🎤 [Backend] 录音状态已重置: is_recording={self.is_recording}, start_time={self.recording_start_time}")
+                else:
+                    logger.warning(f"🎤 [Backend] 未知的录音控制动作: {control_action}")
 
     def close(self):
+        logger.info(f"🔌 [Stream] 开始关闭RTC流 - session_id: {self.session_id}")
+        
+        # 设置退出信号
+        logger.info(f"🔌 [Stream] 设置退出信号 - session_id: {self.session_id}")
         self.quit.set()
+        logger.info(f"🔌 [Stream] 退出信号已设置 - session_id: {self.session_id}")
+        
+        # 从流字典中移除当前会话
         if self.session_id in self.streams:
+            logger.info(f"🔌 [Stream] 从流字典中移除会话 - session_id: {self.session_id}")
+            logger.info(f"🔌 [Stream] 移除前流字典大小: {len(self.streams)}")
             del self.streams[self.session_id]
+            logger.info(f"🔌 [Stream] 移除后流字典大小: {len(self.streams)}")
+        else:
+            logger.warning(f"⚠️ [Stream] 警告: 会话不在流字典中 - session_id: {self.session_id}")
+        
+        # 调用父类的close方法
+        logger.info(f"🔌 [Stream] 调用父类close方法 - session_id: {self.session_id}")
         super().close()
+        logger.info(f"✅ [Stream] RTC流关闭完成 - session_id: {self.session_id}")

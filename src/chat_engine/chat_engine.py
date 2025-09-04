@@ -74,11 +74,16 @@ class ChatEngine(object):
         return session, handler_env
 
     def stop_session(self, session_id: str):
-        session = self.sessions.pop(session_id)
-        if session is None:
-            logger.error(f"Session {session_id} is not found.")
-            return
-        session.stop()
+        logger.info(f"🏭 [Engine] 收到停止会话请求 - session_id: {session_id}")
+        
+        if session_id in self.sessions:
+            logger.info(f"🏭 [Engine] 停止会话 - session_id: {session_id} (活跃会话: {len(self.sessions)} -> {len(self.sessions)-1})")
+            
+            session = self.sessions.pop(session_id)
+            session.stop()
+            logger.info(f"✅ [Engine] 会话停止完成 - session_id: {session_id}")
+        else:
+            logger.warning(f"⚠️ [Engine] 尝试停止不存在的会话 - session_id: {session_id}, 活跃会话: {list(self.sessions.keys())}")
     
     def shutdown(self):
         logger.info("Shutting down chat engine...")

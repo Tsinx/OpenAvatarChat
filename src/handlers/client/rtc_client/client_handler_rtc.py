@@ -66,11 +66,18 @@ class RtcClientSessionDelegate(ClientSessionDelegate):
         if timestamp is None:
             timestamp = self.get_timestamp()
         if self.data_submitter is None:
+            logger.warning("[CLIENT_HANDLER] data_submitter is None, cannot submit data")
             return
         definition = self.input_data_definitions.get(modality)
         chat_data_type = self.modality_mapping.get(modality)
         if chat_data_type is None or definition is None:
+            logger.warning(f"[CLIENT_HANDLER] Invalid modality mapping: modality={modality}, chat_data_type={chat_data_type}, definition={definition}")
             return
+        
+        # 只为文本数据记录详细日志，音频视频数据过于频繁
+        if modality == EngineChannelType.TEXT:
+            logger.info(f"[CLIENT_HANDLER] Processing text data: {data}")
+        
         data_bundle = DataBundle(definition)
         if modality == EngineChannelType.AUDIO:
             data_bundle.set_main_data(data.squeeze()[np.newaxis, ...])
@@ -85,17 +92,26 @@ class RtcClientSessionDelegate(ClientSessionDelegate):
         
         # 添加额外的元数据
         if meta_data:
+            if modality == EngineChannelType.TEXT:
+                logger.info(f"[CLIENT_HANDLER] Adding meta_data: {meta_data}")
             for key, value in meta_data.items():
                 data_bundle.add_meta(key, value)
+        
         chat_data = ChatData(
             source="client",
             type=chat_data_type,
             data=data_bundle,
             timestamp=timestamp,
         )
+        
+        # 只为文本数据记录提交日志
+        if modality == EngineChannelType.TEXT:
+            logger.info(f"[CLIENT_HANDLER] Submitting ChatData: type={chat_data_type}, source=client, timestamp={timestamp}")
         self.data_submitter.submit(chat_data)
+        
         if loopback:
             self.output_queues[modality].put_nowait(chat_data)
+            logger.debug(f"[CLIENT_HANDLER] Added to loopback queue: {modality}")
 
     def get_timestamp(self):
         return self.timestamp_generator()
